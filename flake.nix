@@ -13,6 +13,19 @@
   }: let
     pkgs = nixpkgs.legacyPackages."x86_64-linux";
     naerskLib = pkgs.callPackage naersk {};
+    dlopenLibraries = with pkgs; [
+      libxkbcommon
+
+      # GPU backend
+      vulkan-loader
+      # libGL
+
+      # Window system
+      wayland
+      # xorg.libX11
+      # xorg.libXcursor
+      # xorg.libXi
+    ];
   in {
     packages.x86_64-linux.default = naerskLib.buildPackage {
       src = "./.";
@@ -27,6 +40,7 @@
         rustfmt
       ];
       env.RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
+      env.RUSTFLAGS = "-C link-arg=-Wl,-rpath,${nixpkgs.lib.makeLibraryPath dlopenLibraries}";
     };
   };
 }
