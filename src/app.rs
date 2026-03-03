@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use iced::widget::{Container, button, column, image, row, text};
@@ -6,12 +7,7 @@ use iced::{Element, Length, Task};
 use rfd::{FileDialog, FileHandle};
 use walkdir::WalkDir;
 
-#[derive(Debug, Default)]
-pub struct Version {
-    major: u32,
-    minor: u32,
-    patch: u32,
-}
+use crate::config::{Config, Set, Version};
 
 pub struct App {
     version: Version,
@@ -20,6 +16,8 @@ pub struct App {
 
     directory: String,
     images: Vec<PathBuf>,
+
+    sets: Vec<Set>,
 
     image_duration: u32,
     break_duration: u32,
@@ -62,6 +60,7 @@ impl Default for App {
             screen: Screen::Menu,
             directory: "".to_string(),
             images: Vec::new(),
+            sets: Vec::new(),
             image_duration: 30,
             break_duration: 5,
             image_limit: 10,
@@ -72,6 +71,40 @@ impl Default for App {
 }
 
 impl App {
+    fn get_config_path() -> Option<PathBuf> {
+        let config_option: Option<PathBuf> = dirs_next::config_dir();
+        if let Some(mut config_path) = config_option {
+            config_path.push("gdrawer");
+            config_path.push("config.json");
+            return Some(config_path);
+        }
+        None
+    }
+
+    pub fn load_config(&mut self) {
+        if let Some(config_path) = App::get_config_path() {
+            if fs::exists(&config_path).is_err() {
+                println!("Settings does not exists. Using default");
+                return;
+            }
+            let content: String = fs::read_to_string(&config_path).unwrap();
+            let config: Config = serde_json::from_str(&content).expect("settings are corrupted");
+            self.sets = config.sets;
+            self.version = config.version;
+        } else {
+            println!("Settings does not exists. Using default");
+        }
+    }
+    pub fn save_config(&self) {
+        if let Some(config_path) = App::get_config_path() {
+            let content: String =
+                serde_json::to_string(&Config::new(self.version, self.sets.to_vec()))
+                    .expect("Cant parse config to json");
+            fs::create_dir_all(&config_path).expect("Could not make directories");
+            fs::write(&config_path, content).expect("Could not save config");
+        }
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Menu(menu_message) => self.menu_update(menu_message),
