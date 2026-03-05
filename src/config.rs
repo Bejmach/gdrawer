@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,7 @@ pub struct Version {
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Set {
+    pub name: String,
     pub directory: String,
 
     pub image_duration: u32,
@@ -22,7 +23,7 @@ pub struct Set {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     pub version: Version,
-    pub sets: HashMap<String, Set>,
+    pub sets: BTreeMap<String, Set>,
 }
 
 impl Version {
@@ -37,12 +38,14 @@ impl Version {
 
 impl Set {
     pub fn new(
+        name: String,
         directory: String,
         image_duration: u32,
         break_duration: u32,
         image_limit: u32,
     ) -> Self {
         Self {
+            name,
             directory,
             image_duration,
             break_duration,
@@ -52,7 +55,7 @@ impl Set {
 }
 
 impl Config {
-    pub fn new(version: Version, sets: HashMap<String, Set>) -> Self {
+    pub fn new(version: Version, sets: BTreeMap<String, Set>) -> Self {
         Self { version, sets }
     }
 
