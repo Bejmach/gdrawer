@@ -74,8 +74,13 @@ impl Config {
     pub fn load(path: Vec<&str>, file_name: &str) -> Result<Self> {
         if let Some(dir_path) = Config::get_path(path) {
             let file_path: PathBuf = dir_path.join(format!("{}.json", file_name));
-            if fs::exists(&file_path).is_err() {
+            let exist_result = fs::exists(&file_path);
+            if let Ok(exist) = exist_result
+                && !exist
+            {
                 return Err(anyhow!("file does not exist"));
+            } else if exist_result.is_err() {
+                return Err(anyhow!("Cant define if directory exists"));
             }
             let content: String = fs::read_to_string(&file_path).expect("Failed to read file");
             return Ok(serde_json::from_str(&content).expect("Failed to parse config"));

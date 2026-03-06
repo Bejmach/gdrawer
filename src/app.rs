@@ -6,10 +6,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 use iced::widget::{
-    Button, Column, Container, Row, Scrollable, Text, TextInput, button, center, column, container,
-    image, row, text,
+    Button, Column, Container, Image, Row, Scrollable, Text, TextInput, button, center, center_x,
+    column, container, image, row, text,
 };
-use iced::{Alignment, Element, Length, Task};
+use iced::{Alignment, Element, Length, Subscription, Task, time};
+use rand::Rng;
+use rand::seq::SliceRandom;
 use rfd::{FileDialog, FileHandle};
 use walkdir::WalkDir;
 
@@ -31,8 +33,10 @@ pub struct App {
     break_duration: u32,
     image_limit: u32,
 
+    running: bool,
     on_break: bool,
 
+    cur_id: Option<u32>,
     timer: u32,
 
     display_time: DisplayTime,
@@ -49,6 +53,9 @@ pub struct App {
 pub enum Screen {
     Menu,
     Advanced,
+    Image,
+    Break,
+    Finish,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +68,10 @@ pub enum DisplayTime {
 pub enum Message {
     Menu(MenuMessage),
     Advanced(AdvancedMessage),
+    Image(ImageMessage),
+    Break(BreakMessage),
+    Finish(FinishMessage),
+    Tick,
 }
 
 #[derive(Debug, Clone)]
@@ -84,10 +95,28 @@ pub enum AdvancedMessage {
     BreakDurationChanged(String),
     ImageLimitChanged(String),
     SaveSet,
+    DeleteSet(String),
     MenuPressed,
     StartPressed,
     ChangeDirectoryPressed,
     DirectoryChanged(Option<PathBuf>),
+}
+
+#[derive(Debug, Clone)]
+pub enum ImageMessage {
+    SkipImage,
+    BreakSession,
+}
+
+#[derive(Debug, Clone)]
+pub enum BreakMessage {
+    EndBreak,
+    BreakSession,
+}
+
+#[derive(Debug, Clone)]
+pub enum FinishMessage {
+    MenuPressed,
 }
 
 impl MenuMessage {
@@ -102,6 +131,23 @@ impl AdvancedMessage {
     }
 }
 
+impl ImageMessage {
+    pub fn to_mes(self) -> Message {
+        Message::Image(self)
+    }
+}
+
+impl BreakMessage {
+    pub fn to_mes(self) -> Message {
+        Message::Break(self)
+    }
+}
+impl FinishMessage {
+    pub fn to_mes(self) -> Message {
+        Message::Finish(self)
+    }
+}
+
 impl Default for App {
     fn default() -> Self {
         Self {
@@ -113,7 +159,9 @@ impl Default for App {
             image_duration: 30,
             break_duration: 5,
             image_limit: 10,
+            running: false,
             on_break: false,
+            cur_id: None,
             timer: 0,
             display_time: DisplayTime::Image,
 
@@ -126,183 +174,78 @@ impl Default for App {
     }
 }
 
+// Base
 impl App {
-    fn title(&self) -> String {
-        "GDrawer".to_string()
-    }
-
-    fn get_config_path() -> Option<PathBuf> {
-        let config_option: Option<PathBuf> = dirs_next::config_dir();
-        if let Some(mut config_path) = config_option {
-            config_path.push("gdrawer");
-            config_path.push("config.json");
-            return Some(config_path);
-        }
-        None
-    }
-
-    pub fn load_config(&mut self) {
-        if let Some(config_path) = App::get_config_path() {
-            if fs::exists(&config_path).is_err() {
-                println!("Settings does not exists. Using default");
-                return;
-            }
-            let content: String = fs::read_to_string(&config_path).unwrap();
-            let config: Config = serde_json::from_str(&content).expect("settings are corrupted");
-            self.sets = config.sets;
-            self.version = config.version;
+    pub fn new() -> Self {
+        let config_result = Config::load(vec!["gdrawer"], "data");
+        let (version, sets) = if let Ok(config) = config_result {
+            (config.version, config.sets.clone())
         } else {
-            println!("Settings does not exists. Using default");
+            (Version::default(), BTreeMap::new())
+        };
+
+        Self {
+            version,
+            screen: Screen::Menu,
+            directory: "".to_string(),
+            images: Vec::new(),
+            sets,
+            image_duration: 30,
+            break_duration: 5,
+            image_limit: 10,
+            running: false,
+            on_break: false,
+            cur_id: None,
+            timer: 0,
+            display_time: DisplayTime::Image,
+
+            set_name: "Set".to_string(),
+            set_directory: "".to_string(),
+            set_image_duration: 30,
+            set_break_duration: 5,
+            set_image_limit: 10,
         }
     }
-    pub fn save_config(&self) {
-        if let Some(config_path) = App::get_config_path() {
-            let content: String =
-                serde_json::to_string(&Config::new(self.version, self.sets.clone()))
-                    .expect("Cant parse config to json");
-            fs::create_dir_all(&config_path).expect("Could not make directories");
-            fs::write(&config_path, content).expect("Could not save config");
-        }
+
+    pub fn title(&self) -> String {
+        "GDrawer".to_string()
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Menu(menu_message) => self.menu_update(menu_message),
             Message::Advanced(advanced_message) => self.advanced_update(advanced_message),
+            Message::Image(image_message) => self.image_update(image_message),
+            Message::Break(break_message) => self.break_update(break_message),
+            Message::Finish(finish_message) => self.finish_update(finish_message),
+            Message::Tick => {
+                self.on_tick();
+                Task::none()
+            }
         }
     }
-    fn menu_update(&mut self, message: MenuMessage) -> Task<Message> {
-        match message {
-            MenuMessage::ChangeDirectoryPressed => Task::perform(App::get_directory(), |path| {
-                MenuMessage::DirectoryChanged(path).to_mes()
-            }),
-            MenuMessage::DirectoryChanged(path) => {
-                if let Some(path_buf) = path
-                    && let Some(path_str) = path_buf.to_str()
-                {
-                    self.directory = path_str.to_string();
-                    return Task::done(MenuMessage::ScanImagesPressed.to_mes());
-                }
-                Task::none()
-            }
-            MenuMessage::ScanImagesPressed => {
-                if !self.directory.is_empty() {
-                    self.images = get_images(&self.directory);
-                }
-                Task::none()
-            }
-            MenuMessage::ImageDurationChanged(duration) => {
-                self.image_duration = duration;
-                Task::none()
-            }
-            MenuMessage::BreakDurationChanged(duration) => {
-                self.break_duration = duration;
-                Task::none()
-            }
-            MenuMessage::ImageLimitChanged(limit) => {
-                self.image_limit = limit;
-                Task::none()
-            }
-            MenuMessage::ChangeDisplayedTime(display_time) => {
-                self.display_time = display_time;
-                Task::none()
-            }
-            MenuMessage::AdvancedPressed => {
-                self.screen = Screen::Advanced;
-                Task::none()
-            }
-            MenuMessage::StartPressed => Task::none(),
-        }
-    }
-    fn advanced_update(&mut self, message: AdvancedMessage) -> Task<Message> {
-        match message {
-            AdvancedMessage::StartPressed => Task::none(),
-            AdvancedMessage::MenuPressed => {
-                self.screen = Screen::Menu;
-                Task::none()
-            }
-            AdvancedMessage::SetNameChanged(name) => {
-                self.set_name = name;
-                Task::none()
-            }
-            AdvancedMessage::ImageDurationChanged(str_dur) => {
-                if str_dur.is_empty() {
-                    self.set_image_duration = 0;
-                } else if let Ok(val) = str_dur.parse::<u32>() {
-                    self.set_image_duration = val;
-                }
-                Task::none()
-            }
-            AdvancedMessage::BreakDurationChanged(str_dur) => {
-                if str_dur.is_empty() {
-                    self.set_break_duration = 0;
-                } else if let Ok(val) = str_dur.parse::<u32>() {
-                    self.set_break_duration = val;
-                }
-                Task::none()
-            }
-            AdvancedMessage::ImageLimitChanged(str_lim) => {
-                if str_lim.is_empty() {
-                    self.set_image_limit = 0;
-                } else if let Ok(val) = str_lim.parse::<u32>() {
-                    self.set_image_limit = val;
-                }
-                Task::none()
-            }
-            AdvancedMessage::SetPressed(set_name) => {
-                if let Some(set) = self.sets.get(&set_name) {
-                    self.set_image_duration = set.image_duration;
-                    self.set_break_duration = set.break_duration;
-                    self.set_image_limit = set.image_limit;
-                }
-                Task::none()
-            }
-            AdvancedMessage::SaveSet => {
-                if self.sets.contains_key(&self.set_name) {
-                    return Task::none();
-                }
-                let path = PathBuf::from_str(&self.set_directory);
-                if path.is_err() {
-                    return Task::none();
-                }
-                let dir_exist = fs::exists(path.unwrap());
-                if self.set_name.is_empty() || dir_exist.is_err() || dir_exist.is_ok_and(|l| !l) {
-                    return Task::none();
-                }
-                let set = Set::new(
-                    self.set_name.clone(),
-                    self.set_directory.clone(),
-                    self.set_image_duration,
-                    self.set_break_duration,
-                    self.set_image_limit,
-                );
 
-                self.set_name = "Set".to_string();
-                self.set_directory = "".to_string();
-                self.set_image_duration = 30;
-                self.set_break_duration = 5;
-                self.set_image_limit = 10;
-                println!("{:?}", set);
-                self.sets.insert(set.name.clone(), set);
-                println!("{:?}", self);
-                Task::none()
-            }
-            AdvancedMessage::ChangeDirectoryPressed => {
-                Task::perform(App::get_directory(), |path| {
-                    AdvancedMessage::DirectoryChanged(path).to_mes()
-                })
-            }
-            AdvancedMessage::DirectoryChanged(path) => {
-                if let Some(path_buf) = path
-                    && let Some(path_str) = path_buf.to_str()
-                {
-                    self.set_directory = path_str.to_string();
-                    return Task::done(MenuMessage::ScanImagesPressed.to_mes());
-                }
-                Task::none()
-            }
+    pub fn view(&self) -> Element<'_, Message> {
+        match self.screen {
+            Screen::Menu => self.menu_view(),
+            Screen::Advanced => self.advanced_view(),
+            Screen::Image => self.image_view(),
+            Screen::Break => self.break_view(),
+            Screen::Finish => self.finish_view(),
         }
     }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        if self.running {
+            time::every(Duration::from_secs(1)).map(|_| Message::Tick)
+        } else {
+            Subscription::none()
+        }
+    }
+}
+
+//Functions
+impl App {
     async fn get_directory() -> Option<PathBuf> {
         let selected: Option<FileHandle> = rfd::AsyncFileDialog::new().pick_folder().await;
         if let Some(handler) = selected {
@@ -310,14 +253,46 @@ impl App {
         }
         None
     }
-
-    pub fn view(&self) -> Element<'_, Message> {
-        match self.screen {
-            Screen::Menu => self.menu_view(),
-            Screen::Advanced => self.advanced_view(),
+    fn save_data(&self) -> Result<()> {
+        let config: Config = Config::new(self.version, self.sets.clone());
+        config.save(vec!["gdrawer"], "data")
+    }
+    fn shuffle_img(&mut self) {
+        self.images.shuffle(&mut rand::rng());
+    }
+    fn on_tick(&mut self) {
+        self.timer -= 1;
+        if self.timer == 0 {
+            if self.on_break {
+                self.on_break = false;
+                self.screen = Screen::Image;
+                self.timer = self.image_duration;
+            } else {
+                let id: u32 = self.cur_id.unwrap_or_default() + 1;
+                if id >= self.image_limit {
+                    self.running = false;
+                    self.screen = Screen::Finish;
+                } else {
+                    self.on_break = true;
+                    self.screen = Screen::Break;
+                    self.timer = self.break_duration;
+                }
+                self.cur_id = Some(id)
+            }
         }
     }
+    fn start(&mut self) {
+        self.image_limit = self.image_limit.min(self.images.len() as u32);
+        self.cur_id = Some(0);
+        self.running = true;
+        self.shuffle_img();
+        self.screen = Screen::Image;
+        self.timer = self.image_duration;
+    }
+}
 
+//Menu
+impl App {
     fn menu_view(&self) -> Element<'_, Message> {
         let title: Text = Text::new(self.title())
             .size(40)
@@ -450,6 +425,56 @@ impl App {
             .padding(15)
             .into()
     }
+    fn menu_update(&mut self, message: MenuMessage) -> Task<Message> {
+        match message {
+            MenuMessage::ChangeDirectoryPressed => Task::perform(App::get_directory(), |path| {
+                MenuMessage::DirectoryChanged(path).to_mes()
+            }),
+            MenuMessage::DirectoryChanged(path) => {
+                if let Some(path_buf) = path
+                    && let Some(path_str) = path_buf.to_str()
+                {
+                    self.directory = path_str.to_string();
+                    return Task::done(MenuMessage::ScanImagesPressed.to_mes());
+                }
+                Task::none()
+            }
+            MenuMessage::ScanImagesPressed => {
+                if !self.directory.is_empty() {
+                    self.images = get_images(&self.directory);
+                }
+                Task::none()
+            }
+            MenuMessage::ImageDurationChanged(duration) => {
+                self.image_duration = duration;
+                Task::none()
+            }
+            MenuMessage::BreakDurationChanged(duration) => {
+                self.break_duration = duration;
+                Task::none()
+            }
+            MenuMessage::ImageLimitChanged(limit) => {
+                self.image_limit = limit;
+                Task::none()
+            }
+            MenuMessage::ChangeDisplayedTime(display_time) => {
+                self.display_time = display_time;
+                Task::none()
+            }
+            MenuMessage::AdvancedPressed => {
+                self.screen = Screen::Advanced;
+                Task::none()
+            }
+            MenuMessage::StartPressed => {
+                self.start();
+                Task::none()
+            }
+        }
+    }
+}
+
+//Advanced
+impl App {
     fn advanced_view(&self) -> Element<'_, Message> {
         let title: Text = Text::new(self.title())
             .size(40)
@@ -462,12 +487,13 @@ impl App {
             .sets
             .values()
             .map(|v| {
-                App::set_container(v)
-                    .on_press(AdvancedMessage::SetPressed(v.name.clone()).to_mes())
-                    .into()
+                App::set_container(
+                    v,
+                    AdvancedMessage::SetPressed(v.name.clone()).to_mes(),
+                    AdvancedMessage::DeleteSet(v.name.clone()).to_mes(),
+                )
             })
             .collect();
-        println!("len: {}", set_list.len());
         let set_collumn = Column::with_children(set_list)
             .width(Length::Fill)
             .height(Length::Shrink)
@@ -600,17 +626,287 @@ impl App {
             .width(Length::Shrink)
             .height(Length::Shrink)
             .spacing(5);
+        let footer = Container::new(bottom_row)
+            .align_right(Length::Fill)
+            .height(Length::Shrink);
 
-        Container::new(Column::new().push(title).push(body).push(bottom_row))
+        Container::new(Column::new().push(title).push(body).push(footer))
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .padding(15)
             .into()
     }
+    fn advanced_update(&mut self, message: AdvancedMessage) -> Task<Message> {
+        match message {
+            AdvancedMessage::StartPressed => {
+                self.image_duration = self.set_image_duration;
+                self.break_duration = self.set_break_duration;
+                self.image_limit = self.set_image_limit;
+                self.directory = self.set_directory.clone();
+                self.images = get_images(&self.directory);
+                self.start();
+                Task::none()
+            }
+            AdvancedMessage::MenuPressed => {
+                self.screen = Screen::Menu;
+                Task::none()
+            }
+            AdvancedMessage::SetNameChanged(name) => {
+                self.set_name = name;
+                Task::none()
+            }
+            AdvancedMessage::ImageDurationChanged(str_dur) => {
+                if str_dur.is_empty() {
+                    self.set_image_duration = 0;
+                } else if let Ok(val) = str_dur.parse::<u32>() {
+                    self.set_image_duration = val;
+                }
+                Task::none()
+            }
+            AdvancedMessage::BreakDurationChanged(str_dur) => {
+                if str_dur.is_empty() {
+                    self.set_break_duration = 0;
+                } else if let Ok(val) = str_dur.parse::<u32>() {
+                    self.set_break_duration = val;
+                }
+                Task::none()
+            }
+            AdvancedMessage::ImageLimitChanged(str_lim) => {
+                if str_lim.is_empty() {
+                    self.set_image_limit = 0;
+                } else if let Ok(val) = str_lim.parse::<u32>() {
+                    self.set_image_limit = val;
+                }
+                Task::none()
+            }
+            AdvancedMessage::SetPressed(set_name) => {
+                if let Some(set) = self.sets.get(&set_name) {
+                    self.set_name = set.name.clone();
+                    self.set_directory = set.directory.clone();
+                    self.set_image_duration = set.image_duration;
+                    self.set_break_duration = set.break_duration;
+                    self.set_image_limit = set.image_limit;
+                }
+                Task::none()
+            }
+            AdvancedMessage::SaveSet => {
+                if self.sets.contains_key(&self.set_name) {
+                    return Task::none();
+                }
+                let path = PathBuf::from_str(&self.set_directory);
+                if path.is_err() {
+                    return Task::none();
+                }
+                let dir_exist = fs::exists(path.unwrap());
+                if self.set_name.is_empty() || dir_exist.is_err() || dir_exist.is_ok_and(|l| !l) {
+                    return Task::none();
+                }
+                let set = Set::new(
+                    self.set_name.clone(),
+                    self.set_directory.clone(),
+                    self.set_image_duration,
+                    self.set_break_duration,
+                    self.set_image_limit,
+                );
+
+                self.set_name = "Set".to_string();
+                self.set_directory = "".to_string();
+                self.set_image_duration = 30;
+                self.set_break_duration = 5;
+                self.set_image_limit = 10;
+                self.sets.insert(set.name.clone(), set);
+                let _ = self.save_data();
+                Task::none()
+            }
+            AdvancedMessage::DeleteSet(set_name) => {
+                self.sets.remove(&set_name);
+                Task::none()
+            }
+            AdvancedMessage::ChangeDirectoryPressed => {
+                Task::perform(App::get_directory(), |path| {
+                    AdvancedMessage::DirectoryChanged(path).to_mes()
+                })
+            }
+            AdvancedMessage::DirectoryChanged(path) => {
+                if let Some(path_buf) = path
+                    && let Some(path_str) = path_buf.to_str()
+                {
+                    self.set_directory = path_str.to_string();
+                    return Task::done(MenuMessage::ScanImagesPressed.to_mes());
+                }
+                Task::none()
+            }
+        }
+    }
 }
+
+//Image
+impl App {
+    fn image_view(&self) -> Element<'_, Message> {
+        let image: Container<'_, Message> = if let Some(id) = self.cur_id
+            && let Some(path) = self.images.get(id as usize)
+        {
+            Container::new(image(path).expand(true))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+        } else {
+            center("Failed to get image path")
+                .width(Length::Fill)
+                .height(Length::Fill)
+        };
+
+        let timer = center(text(format_time(self.timer)))
+            .width(Length::Fill)
+            .height(Length::Fixed(40.0));
+
+        let skip_button = Button::new("Skip")
+            .width(Length::Fixed(80.0))
+            .height(Length::Fixed(30.0))
+            .on_press(ImageMessage::SkipImage.to_mes());
+        let break_button = Button::new("Break")
+            .width(Length::Fixed(80.0))
+            .height(Length::Fixed(30.0))
+            .on_press(ImageMessage::BreakSession.to_mes());
+
+        let spacer = Container::new("").width(Length::Fill);
+
+        let footer_row = Row::new()
+            .push(break_button)
+            .push(spacer)
+            .push(skip_button)
+            .spacing(5);
+        let footer: Container<'_, Message> = Container::new(footer_row)
+            .center_x(Length::Fill)
+            .height(Length::Fixed(30.0));
+
+        let view_column = Column::new().push(image).push(timer).push(footer);
+        Container::new(view_column)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+    fn image_update(&mut self, message: ImageMessage) -> Task<Message> {
+        match message {
+            ImageMessage::SkipImage => {
+                let id = self.cur_id.unwrap_or_default() + 1;
+                if id >= self.image_limit {
+                    self.running = false;
+                    self.screen = Screen::Finish;
+                    self.cur_id = None;
+                } else {
+                    self.timer = self.image_duration;
+                    self.cur_id = Some(id);
+                }
+                Task::none()
+            }
+            ImageMessage::BreakSession => {
+                self.running = false;
+                self.screen = Screen::Menu;
+                self.cur_id = None;
+                Task::none()
+            }
+        }
+    }
+}
+
+//Break
+impl App {
+    fn break_view(&self) -> Element<'_, Message> {
+        let break_text: Container<'_, Message> = center(Text::new("Break Time").size(40));
+
+        let timer = center(text(format_time(self.timer)))
+            .width(Length::Fill)
+            .height(Length::Fixed(40.0));
+
+        let skip_button = Button::new("Skip")
+            .width(Length::Fixed(80.0))
+            .height(Length::Fixed(30.0))
+            .on_press(BreakMessage::EndBreak.to_mes());
+        let break_button = Button::new("Break")
+            .width(Length::Fixed(80.0))
+            .height(Length::Fixed(30.0))
+            .on_press(BreakMessage::BreakSession.to_mes());
+
+        let spacer = Container::new("").width(Length::Fill);
+
+        let footer_row = Row::new()
+            .push(break_button)
+            .push(spacer)
+            .push(skip_button)
+            .spacing(5);
+        let footer: Container<'_, Message> = Container::new(footer_row)
+            .center_x(Length::Fill)
+            .align_bottom(Length::Shrink);
+
+        let view_column = Column::new()
+            .push(Container::new("").height(Length::Fill))
+            .push(break_text)
+            .push(timer)
+            .push(Container::new("").height(Length::Fill))
+            .push(footer);
+        Container::new(view_column)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .padding(15)
+            .into()
+    }
+    fn break_update(&mut self, message: BreakMessage) -> Task<Message> {
+        match message {
+            BreakMessage::EndBreak => {
+                self.on_break = false;
+                self.screen = Screen::Image;
+                Task::none()
+            }
+            BreakMessage::BreakSession => {
+                self.running = false;
+                self.screen = Screen::Menu;
+                self.cur_id = None;
+                Task::none()
+            }
+        }
+    }
+}
+
+//Finish
+impl App {
+    fn finish_view(&self) -> Element<'_, Message> {
+        let finish_text: Container<'_, Message> =
+            center(Text::new("Session ended. Take some break").size(40))
+                .width(Length::Fill)
+                .height(Length::Fill);
+
+        let back_button = Button::new("Back to menu").on_press(FinishMessage::MenuPressed.to_mes());
+
+        let footer_row = Row::new().push(back_button).spacing(5);
+        let footer = Container::new(footer_row)
+            .center_x(Length::Fill)
+            .align_bottom(Length::Shrink);
+
+        let view_column = Column::new().push(finish_text).push(footer);
+        Container::new(view_column)
+            .center(Length::Fill)
+            .padding(15.0)
+            .into()
+    }
+    fn finish_update(&mut self, message: FinishMessage) -> Task<Message> {
+        match message {
+            FinishMessage::MenuPressed => {
+                self.screen = Screen::Menu;
+                self.running = false;
+                self.on_break = false;
+                Task::none()
+            }
+        }
+    }
+}
+
 // Components
 impl App {
-    fn set_container(set: &Set) -> Button<'_, Message> {
+    fn set_container(
+        set: &Set,
+        set_message: Message,
+        _delete_message: Message,
+    ) -> Element<'_, Message> {
         let name = Container::new(text(&set.name))
             .align_left(Length::FillPortion(2))
             .center_y(Length::Fill);
@@ -640,7 +936,7 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fixed(40.0))
             .style(container::bordered_box);
-        Button::new(component)
+        Button::new(component).on_press(set_message).into()
     }
 }
 
