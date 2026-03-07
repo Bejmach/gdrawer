@@ -2,45 +2,53 @@
   description = "gesture drawing app flake";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     naersk.url = "github:nix-community/naersk";
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
   outputs = {
     self,
     nixpkgs,
     naersk,
-  }: let
-    pkgs = nixpkgs.legacyPackages."x86_64-linux";
-    naerskLib = pkgs.callPackage naersk {};
-    dlopenLibraries = with pkgs; [
-      libxkbcommon
+    flake-utils,
+  }:
+    flake-utils.lib.eachDefaultSystem (
+      system: let
+        pkgs = nixpkgs.legacyPackages.${system};
+        naerskLib = pkgs.callPackage naersk {};
+        dlopenLibraries = with pkgs; [
+          libxkbcommon
 
-      # GPU backend
-      vulkan-loader
-      # libGL
+          # GPU backend
+          vulkan-loader
+          # libGL
 
-      # Window system
-      wayland
-      # xorg.libX11
-      # xorg.libXcursor
-      # xorg.libXi
-    ];
-  in {
-    packages.x86_64-linux.default = naerskLib.buildPackage {
-      src = "./.";
-    };
+          # Window system
+          wayland
+          # xorg.libX11
+          # xorg.libXcursor
+          # xorg.libXi
+        ];
+      in {
+        packages.default = naerskLib.buildPackage {
+          src = ./.;
 
-    devShells."x86_64-linux".default = pkgs.mkShell {
-      buildInputs = with pkgs; [
-        cargo
-        rustc
-        rust-analyzer
-        clippy
-        rustfmt
-      ];
-      env.RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
-      env.RUSTFLAGS = "-C link-arg=-Wl,-rpath,${nixpkgs.lib.makeLibraryPath dlopenLibraries}";
-    };
-  };
+          buildInputs = [pkgs.makeWrapper];
+
+          postInstall = ''
+            wrapProgram $out/bin/gdrawer \
+              --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath dlopenLibraries}"
+          '';
+        };
+        devShells.default = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            cargo
+            rustc
+          ];
+          env.RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
+          env.RUSTFLAGS = "-C link-arg=-Wl,-rpath,${nixpkgs.lib.makeLibraryPath dlopenLibraries}";
+        };
+      }
+    );
 }
