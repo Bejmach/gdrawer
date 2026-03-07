@@ -1241,6 +1241,7 @@ dependencies = [
  "anyhow",
  "dirs-next",
  "iced",
+ "image",
  "rand 0.10.0",
  "rfd",
  "serde",

@@ -1,5 +1,5 @@
 {
-  description = "grace shell controll cli";
+  description = "gesture drawing app flake";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";

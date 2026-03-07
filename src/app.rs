@@ -5,15 +5,18 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::Result;
+use iced::widget::image::Handle;
 use iced::widget::{
     Button, Column, Container, Image, Row, Scrollable, Text, TextInput, button, center, center_x,
-    column, container, image, row, text,
+    column, container, row, text,
 };
-use iced::{Alignment, Element, Length, Subscription, Task, time};
+use iced::{Alignment, Element, Length, Subscription, Task, Transformation, time};
 use rand::Rng;
 use rand::seq::SliceRandom;
 use rfd::{FileDialog, FileHandle};
 use walkdir::WalkDir;
+
+use image::ImageReader;
 
 use crate::config::{Config, Set, Version};
 
@@ -36,6 +39,8 @@ pub struct App {
     running: bool,
     on_break: bool,
 
+    cur_handle: Option<Handle>,
+    next_handle: Option<Handle>,
     cur_id: Option<u32>,
     timer: u32,
 
@@ -72,6 +77,11 @@ pub enum Message {
     Break(BreakMessage),
     Finish(FinishMessage),
     Tick,
+    LoadImage,
+    CurImageLoaded(Handle),
+    PreloadImage,
+    NextImageLoaded(Handle),
+    LoadBothImages,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +171,8 @@ impl Default for App {
             image_limit: 10,
             running: false,
             on_break: false,
+            cur_handle: None,
+            next_handle: None,
             cur_id: None,
             timer: 0,
             display_time: DisplayTime::Image,
@@ -195,6 +207,8 @@ impl App {
             image_limit: 10,
             running: false,
             on_break: false,
+            cur_handle: None,
+            next_handle: None,
             cur_id: None,
             timer: 0,
             display_time: DisplayTime::Image,
@@ -218,9 +232,47 @@ impl App {
             Message::Image(image_message) => self.image_update(image_message),
             Message::Break(break_message) => self.break_update(break_message),
             Message::Finish(finish_message) => self.finish_update(finish_message),
-            Message::Tick => {
-                self.on_tick();
+            Message::Tick => self.on_tick(),
+            Message::LoadImage => Task::perform(
+                App::get_handle(
+                    self.images
+                        .get((self.cur_id.unwrap_or_default()) as usize)
+                        .unwrap()
+                        .clone(),
+                ),
+                Message::CurImageLoaded,
+            ),
+            Message::CurImageLoaded(handle) => {
+                self.cur_handle = Some(handle);
+                println!("{:?}", self.cur_handle);
                 Task::none()
+            }
+            Message::PreloadImage => Task::perform(
+                App::get_handle(
+                    self.images
+                        .get((self.cur_id.unwrap_or_default() + 1) as usize)
+                        .unwrap()
+                        .clone(),
+                ),
+                Message::NextImageLoaded,
+            ),
+            Message::NextImageLoaded(handle) => {
+                self.next_handle = Some(handle);
+                println!("{:?}", self.next_handle);
+                Task::none()
+            }
+            Message::LoadBothImages => {
+                let cur = self.cur_id.unwrap_or(0) as usize;
+
+                let cur_path = self.images[cur].clone();
+                let next_path = self.images[cur + 1].clone();
+
+                println!("Load both");
+
+                Task::batch(vec![
+                    Task::perform(App::get_handle(cur_path), Message::CurImageLoaded),
+                    Task::perform(App::get_handle(next_path), Message::NextImageLoaded),
+                ])
             }
         }
     }
@@ -253,6 +305,19 @@ impl App {
         }
         None
     }
+    async fn get_handle(path: PathBuf) -> Handle {
+        let img = ImageReader::open(&path)
+            .expect("open failed")
+            .decode()
+            .expect("decode failed")
+            .to_rgba8();
+
+        println!("decoded: {:?}", path);
+
+        let (width, height) = img.dimensions();
+
+        Handle::from_rgba(width, height, img.into_raw())
+    }
     fn save_data(&self) -> Result<()> {
         let config: Config = Config::new(self.version, self.sets.clone());
         config.save(vec!["gdrawer"], "data")
@@ -260,26 +325,42 @@ impl App {
     fn shuffle_img(&mut self) {
         self.images.shuffle(&mut rand::rng());
     }
-    fn on_tick(&mut self) {
+    fn on_tick(&mut self) -> Task<Message> {
         self.timer -= 1;
         if self.timer == 0 {
             if self.on_break {
-                self.on_break = false;
-                self.screen = Screen::Image;
+                self.move_handle();
                 self.timer = self.image_duration;
+                self.screen = Screen::Image;
+                self.on_break = false;
+                return Task::done(Message::PreloadImage);
             } else {
                 let id: u32 = self.cur_id.unwrap_or_default() + 1;
                 if id >= self.image_limit {
-                    self.running = false;
-                    self.screen = Screen::Finish;
+                    self.finish_session();
+                    return Task::none();
                 } else {
-                    self.on_break = true;
-                    self.screen = Screen::Break;
-                    self.timer = self.break_duration;
+                    self.enable_break();
+                    return Task::none();
                 }
-                self.cur_id = Some(id)
             }
         }
+        Task::none()
+    }
+    fn enable_break(&mut self) {
+        self.cur_id = Some(self.cur_id.unwrap_or_default() + 1);
+        self.on_break = true;
+        self.screen = Screen::Break;
+        self.timer = self.break_duration;
+    }
+    fn finish_session(&mut self) {
+        self.running = false;
+        self.screen = Screen::Finish;
+    }
+
+    fn move_handle(&mut self) {
+        self.cur_handle = self.next_handle.take();
+        self.next_handle = None;
     }
     fn start(&mut self) {
         self.image_limit = self.image_limit.min(self.images.len() as u32);
@@ -467,7 +548,7 @@ impl App {
             }
             MenuMessage::StartPressed => {
                 self.start();
-                Task::none()
+                Task::done(Message::LoadBothImages)
             }
         }
     }
@@ -645,7 +726,7 @@ impl App {
                 self.directory = self.set_directory.clone();
                 self.images = get_images(&self.directory);
                 self.start();
-                Task::none()
+                Task::done(Message::LoadBothImages)
             }
             AdvancedMessage::MenuPressed => {
                 self.screen = Screen::Menu;
@@ -743,14 +824,12 @@ impl App {
 //Image
 impl App {
     fn image_view(&self) -> Element<'_, Message> {
-        let image: Container<'_, Message> = if let Some(id) = self.cur_id
-            && let Some(path) = self.images.get(id as usize)
-        {
-            Container::new(image(path).expand(true))
+        let image: Container<'_, Message> = if let Some(handle) = &self.cur_handle {
+            Container::new(Image::new(handle).expand(true))
                 .center_x(Length::Fill)
                 .center_y(Length::Fill)
         } else {
-            center("Failed to get image path")
+            center("Failed to get image")
                 .width(Length::Fill)
                 .height(Length::Fill)
         };
@@ -790,13 +869,20 @@ impl App {
             ImageMessage::SkipImage => {
                 let id = self.cur_id.unwrap_or_default() + 1;
                 if id >= self.image_limit {
-                    self.running = false;
-                    self.screen = Screen::Finish;
-                    self.cur_id = None;
-                } else {
-                    self.timer = self.image_duration;
+                    self.finish_session();
+                } else if self.next_handle.is_some() {
+                    self.move_handle();
+                    self.timer = self.image_duration + 1;
                     self.cur_id = Some(id);
+                    if id < self.image_limit - 1 {
+                        return Task::done(Message::PreloadImage);
+                    } else {
+                        return Task::none();
+                    }
+                } else {
+                    return Task::none();
                 }
+
                 Task::none()
             }
             ImageMessage::BreakSession => {
@@ -853,9 +939,11 @@ impl App {
     fn break_update(&mut self, message: BreakMessage) -> Task<Message> {
         match message {
             BreakMessage::EndBreak => {
+                self.move_handle();
                 self.on_break = false;
                 self.screen = Screen::Image;
-                Task::none()
+                self.timer = self.image_duration + 1;
+                Task::done(Message::PreloadImage)
             }
             BreakMessage::BreakSession => {
                 self.running = false;
