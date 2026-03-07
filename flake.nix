@@ -30,8 +30,8 @@
           # xorg.libXcursor
           # xorg.libXi
         ];
-      in {
-        packages.default = naerskLib.buildPackage {
+
+        gdrawer = naerskLib.buildPackage {
           src = ./.;
 
           buildInputs = [pkgs.makeWrapper];
@@ -41,6 +41,26 @@
               --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath dlopenLibraries}"
           '';
         };
+
+        desktopEntry = pkgs.makeDesktopItem {
+          name = "gdrawer";
+          desktopName = "GDrawer";
+          exec = "gdrawer";
+          terminal = false;
+          type = "Application";
+          categories = ["Graphics"];
+          keywords = ["drawer"];
+        };
+      in {
+        packages.default = pkgs.symlinkJoin {
+          inherit gdrawer desktopEntry;
+          name = "gdrawer";
+          paths = [
+            gdrawer
+            desktopEntry
+          ];
+        };
+
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             cargo
