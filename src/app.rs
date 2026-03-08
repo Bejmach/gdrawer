@@ -18,11 +18,13 @@ use walkdir::WalkDir;
 
 use image::ImageReader;
 
-use crate::config::{Config, Set, Version};
+use crate::app;
+use crate::config::{AppData, Config, Set, Version};
 
 #[derive(Debug)]
 pub struct App {
     version: Version,
+    supported_formats: Vec<String>,
 
     screen: Screen,
 
@@ -160,8 +162,12 @@ impl FinishMessage {
 
 impl Default for App {
     fn default() -> Self {
+        let app_data: AppData =
+            serde_json::from_str(include_str!("../app_data.json")).unwrap_or_default();
+
         Self {
-            version: Version::default(),
+            version: app_data.version,
+            supported_formats: app_data.supported_formats,
             screen: Screen::Menu,
             directory: "".to_string(),
             images: Vec::new(),
@@ -190,14 +196,18 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         let config_result = Config::load(vec!["gdrawer"], "data");
-        let (version, sets) = if let Ok(config) = config_result {
-            (config.version, config.sets.clone())
+        let sets = if let Ok(config) = config_result {
+            config.sets.clone()
         } else {
-            (Version::default(), BTreeMap::new())
+            BTreeMap::new()
         };
 
+        let app_data: AppData =
+            serde_json::from_str(include_str!("../app_data.json")).unwrap_or_default();
+
         Self {
-            version,
+            version: app_data.version,
+            supported_formats: app_data.supported_formats,
             screen: Screen::Menu,
             directory: "".to_string(),
             images: Vec::new(),
@@ -375,12 +385,6 @@ impl App {
 //Menu
 impl App {
     fn menu_view(&self) -> Element<'_, Message> {
-        let title: Text = Text::new(self.title())
-            .size(40)
-            .width(Length::Fill)
-            .height(Length::Fixed(40.0))
-            .center();
-
         let directory_button: Button<'_, Message> = Button::new(
             center("Select directory")
                 .width(Length::Fill)
@@ -491,7 +495,7 @@ impl App {
             .height(Length::Shrink);
 
         let column = Column::with_capacity(4)
-            .push(title)
+            .push(self.title_container())
             .push(directory_container)
             .push(time_container)
             .push(bottom)
@@ -522,7 +526,7 @@ impl App {
             }
             MenuMessage::ScanImagesPressed => {
                 if !self.directory.is_empty() {
-                    self.images = get_images(&self.directory);
+                    self.images = get_images(&self.directory, &self.supported_formats);
                 }
                 Task::none()
             }
@@ -557,12 +561,6 @@ impl App {
 //Advanced
 impl App {
     fn advanced_view(&self) -> Element<'_, Message> {
-        let title: Text = Text::new(self.title())
-            .size(40)
-            .width(Length::Fill)
-            .height(Length::Fixed(40.0))
-            .center();
-
         // LEFT SIDE
         let set_list: Vec<Element<'_, Message>> = self
             .sets
@@ -711,11 +709,16 @@ impl App {
             .align_right(Length::Fill)
             .height(Length::Shrink);
 
-        Container::new(Column::new().push(title).push(body).push(footer))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .padding(15)
-            .into()
+        Container::new(
+            Column::new()
+                .push(self.title_container())
+                .push(body)
+                .push(footer),
+        )
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .padding(15)
+        .into()
     }
     fn advanced_update(&mut self, message: AdvancedMessage) -> Task<Message> {
         match message {
@@ -724,7 +727,7 @@ impl App {
                 self.break_duration = self.set_break_duration;
                 self.image_limit = self.set_image_limit;
                 self.directory = self.set_directory.clone();
-                self.images = get_images(&self.directory);
+                self.images = get_images(&self.directory, &self.supported_formats);
                 self.start();
                 Task::done(Message::LoadBothImages)
             }
@@ -990,6 +993,33 @@ impl App {
 
 // Components
 impl App {
+    fn title_container(&self) -> Element<'_, Message> {
+        let title = Text::new("GDrawer")
+            .size(40)
+            .height(Length::Shrink)
+            .width(Length::Shrink);
+        let title_col = Column::new()
+            .push(title)
+            .push(Container::new("").height(Length::Fill));
+        let version = Text::new(format!(
+            "v{}.{}.{}",
+            self.version.major, self.version.minor, self.version.patch
+        ))
+        .size(15)
+        .height(Length::Shrink)
+        .width(Length::Shrink);
+        let version_col = Column::new()
+            .push(Container::new("").height(Length::Fill))
+            .push(version);
+
+        let title_row = Row::new().push(title_col).push(version_col);
+
+        center(title_row)
+            .height(Length::Fixed(75.0))
+            .width(Length::Fill)
+            .into()
+    }
+
     fn set_container(
         set: &Set,
         set_message: Message,
@@ -1044,7 +1074,7 @@ fn format_time(time: u32) -> String {
     format!("{}sec", time)
 }
 
-fn get_images(path: &str) -> Vec<PathBuf> {
+fn get_images(path: &str, supported_formats: &[String]) -> Vec<PathBuf> {
     WalkDir::new(path)
         .into_iter()
         .filter_map(Result::ok)
@@ -1053,7 +1083,7 @@ fn get_images(path: &str) -> Vec<PathBuf> {
                 .extension()
                 .map(|ext| {
                     let ext = ext.to_string_lossy().to_lowercase();
-                    ext == "png" || ext == "jpg" || ext == "jpeg"
+                    supported_formats.contains(&ext)
                 })
                 .unwrap_or(false)
         })

@@ -20,6 +20,26 @@ pub struct Set {
     pub image_limit: u32,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppData {
+    pub version: Version,
+    pub supported_formats: Vec<String>,
+}
+
+impl Default for AppData {
+    fn default() -> Self {
+        Self {
+            version: Version::default(),
+            supported_formats: vec![
+                String::from("png"),
+                String::from("jpeg"),
+                String::from("jpg"),
+                String::from("webp"),
+            ],
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     pub version: Version,
