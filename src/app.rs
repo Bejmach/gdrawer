@@ -5,10 +5,11 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::Result;
+use clap::crate_version;
 use iced::widget::image::Handle;
 use iced::widget::{
     Button, Column, Container, Image, Row, Scrollable, Text, TextInput, button, center, center_x,
-    column, container, row, text,
+    center_y, column, container, progress_bar, row, text,
 };
 use iced::{Alignment, Element, Length, Subscription, Task, Transformation, time};
 use rand::Rng;
@@ -19,11 +20,10 @@ use walkdir::WalkDir;
 use image::ImageReader;
 
 use crate::app;
-use crate::config::{AppData, Config, Set, Version};
+use crate::config::{AppData, Config, Set};
 
 #[derive(Debug)]
 pub struct App {
-    version: Version,
     supported_formats: Vec<String>,
 
     screen: Screen,
@@ -56,10 +56,11 @@ pub struct App {
     set_image_limit: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Screen {
     Menu,
     Advanced,
+    Preparations,
     Image,
     Break,
     Finish,
@@ -166,7 +167,6 @@ impl Default for App {
             serde_json::from_str(include_str!("../app_data.json")).unwrap_or_default();
 
         Self {
-            version: app_data.version,
             supported_formats: app_data.supported_formats,
             screen: Screen::Menu,
             directory: "".to_string(),
@@ -206,7 +206,6 @@ impl App {
             serde_json::from_str(include_str!("../app_data.json")).unwrap_or_default();
 
         Self {
-            version: app_data.version,
             supported_formats: app_data.supported_formats,
             screen: Screen::Menu,
             directory: "".to_string(),
@@ -291,6 +290,7 @@ impl App {
         match self.screen {
             Screen::Menu => self.menu_view(),
             Screen::Advanced => self.advanced_view(),
+            Screen::Preparations => self.prep_view(),
             Screen::Image => self.image_view(),
             Screen::Break => self.break_view(),
             Screen::Finish => self.finish_view(),
@@ -329,7 +329,7 @@ impl App {
         Handle::from_rgba(width, height, img.into_raw())
     }
     fn save_data(&self) -> Result<()> {
-        let config: Config = Config::new(self.version, self.sets.clone());
+        let config: Config = Config::new(self.sets.clone());
         config.save(vec!["gdrawer"], "data")
     }
     fn shuffle_img(&mut self) {
@@ -338,7 +338,10 @@ impl App {
     fn on_tick(&mut self) -> Task<Message> {
         self.timer -= 1;
         if self.timer == 0 {
-            if self.on_break {
+            if self.screen == Screen::Preparations {
+                self.timer = self.image_duration;
+                self.screen = Screen::Image;
+            } else if self.on_break {
                 self.move_handle();
                 self.timer = self.image_duration;
                 self.screen = Screen::Image;
@@ -377,8 +380,8 @@ impl App {
         self.cur_id = Some(0);
         self.running = true;
         self.shuffle_img();
-        self.screen = Screen::Image;
-        self.timer = self.image_duration;
+        self.screen = Screen::Preparations;
+        self.timer = 5;
     }
 }
 
@@ -682,7 +685,11 @@ impl App {
             .height(Length::Fill)
             .spacing(5);
 
-        let right_side = Container::new(right_column)
+        let right_scroll = Scrollable::new(right_column)
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        let right_side = Container::new(right_scroll)
             .width(Length::FillPortion(1))
             .height(Length::Fill)
             .style(container::bordered_box);
@@ -804,6 +811,7 @@ impl App {
             }
             AdvancedMessage::DeleteSet(set_name) => {
                 self.sets.remove(&set_name);
+                let _ = self.save_data();
                 Task::none()
             }
             AdvancedMessage::ChangeDirectoryPressed => {
@@ -824,6 +832,21 @@ impl App {
     }
 }
 
+//Preparations
+impl App {
+    fn prep_view(&self) -> Element<'_, Message> {
+        let text = center(
+            "Give us a sec to prepare everything for you\n(tbh, Its just 5 sec wait, for first image to load)",
+        );
+        let progress = progress_bar(0.0..=5.0, (5 - self.timer) as f32)
+            .length(Length::Fill)
+            .girth(Length::Fixed(10.0));
+
+        let column = Column::new().push(text).push(progress);
+        center(column).padding(15).into()
+    }
+}
+
 //Image
 impl App {
     fn image_view(&self) -> Element<'_, Message> {
@@ -837,9 +860,12 @@ impl App {
                 .height(Length::Fill)
         };
 
-        let timer = center(text(format_time(self.timer)))
-            .width(Length::Fill)
-            .height(Length::Fixed(40.0));
+        let progress = progress_bar(
+            0.0..=(self.image_duration as f32),
+            (self.image_duration - self.timer) as f32,
+        )
+        .length(Length::Fill)
+        .girth(Length::Fixed(5.0));
 
         let skip_button = Button::new("Skip")
             .width(Length::Fixed(80.0))
@@ -861,10 +887,15 @@ impl App {
             .center_x(Length::Fill)
             .height(Length::Fixed(30.0));
 
-        let view_column = Column::new().push(image).push(timer).push(footer);
+        let view_column = Column::new()
+            .push(progress)
+            .push(image)
+            .push(footer)
+            .spacing(5);
         Container::new(view_column)
             .center_x(Length::Fill)
             .center_y(Length::Fill)
+            .padding(15)
             .into()
     }
     fn image_update(&mut self, message: ImageMessage) -> Task<Message> {
@@ -1001,13 +1032,10 @@ impl App {
         let title_col = Column::new()
             .push(title)
             .push(Container::new("").height(Length::Fill));
-        let version = Text::new(format!(
-            "v{}.{}.{}",
-            self.version.major, self.version.minor, self.version.patch
-        ))
-        .size(15)
-        .height(Length::Shrink)
-        .width(Length::Shrink);
+        let version = Text::new(format!("v{}", crate_version!()))
+            .size(15)
+            .height(Length::Shrink)
+            .width(Length::Shrink);
         let version_col = Column::new()
             .push(Container::new("").height(Length::Fill))
             .push(version);
@@ -1023,36 +1051,63 @@ impl App {
     fn set_container(
         set: &Set,
         set_message: Message,
-        _delete_message: Message,
+        delete_message: Message,
     ) -> Element<'_, Message> {
-        let name = Container::new(text(&set.name))
-            .align_left(Length::FillPortion(2))
-            .center_y(Length::Fill);
-        let image_time =
-            Container::new(text(format!("Image: {}", format_time(set.image_duration))))
-                .center_x(Length::FillPortion(2))
-                .center_y(Length::Fill);
-        let break_time =
-            Container::new(text(format!("Break: {}", format_time(set.break_duration))))
-                .center_x(Length::FillPortion(2))
-                .center_y(Length::Fill);
-        let image_limit = Container::new(text(format!("Limit: {}", format_time(set.image_limit))))
-            .center_x(Length::FillPortion(2))
-            .center_y(Length::Fill);
-        let directory = Container::new(text(format!("Directory: {}", set.directory)))
-            .center_x(Length::FillPortion(6))
-            .center_y(Length::Fill);
+        let name = Container::new(text(&set.name).size(24))
+            .height(Length::Shrink)
+            .center_x(Length::Fill);
+
+        let img_text = center_x("Image");
+        let img_time = center_x(text(format_time(set.image_duration)));
+        let img_col = Column::new().push(img_text).push(img_time).spacing(5);
+        let img_container = Container::new(img_col)
+            .height(Length::Shrink)
+            .width(Length::FillPortion(1));
+
+        let break_text = center_x("Break");
+        let break_time = center_x(text(format_time(set.break_duration)));
+        let break_col = Column::new().push(break_text).push(break_time).spacing(5);
+        let break_container = Container::new(break_col)
+            .height(Length::Shrink)
+            .width(Length::FillPortion(1));
+
+        let limit_text = center_x("Limit");
+        let limit = center_x(text(set.image_limit));
+        let limit_col = Column::new().push(limit_text).push(limit).spacing(5);
+        let limit_container = Container::new(limit_col)
+            .height(Length::Shrink)
+            .width(Length::FillPortion(1));
+
         let row = Row::new()
+            .push(img_container)
+            .push(break_container)
+            .push(limit_container)
+            .spacing(5);
+
+        let times = center_x(row).padding(5);
+
+        let directory = center_x(text(&set.directory));
+
+        let delete_button: Button<'_, Message> = Button::new("Delete")
+            .on_press(delete_message)
+            .width(Length::Shrink)
+            .height(Length::Shrink);
+
+        let footer_row = Row::new()
+            .push(Container::new("").width(Length::Fill))
+            .push(delete_button);
+
+        let column = Column::new()
             .push(name)
-            .push(image_time)
-            .push(break_time)
-            .push(image_limit)
+            .push(times)
             .push(directory)
+            .push(footer_row)
+            .spacing(5)
             .width(Length::Fill)
             .height(Length::Fill);
-        let component = Container::new(row)
+        let component = Container::new(column)
             .width(Length::Fill)
-            .height(Length::Fixed(40.0))
+            .height(Length::Shrink)
             .style(container::bordered_box);
         Button::new(component).on_press(set_message).into()
     }

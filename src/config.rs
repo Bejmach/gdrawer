@@ -3,13 +3,6 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize)]
-pub struct Version {
-    pub major: u32,
-    pub minor: u32,
-    pub patch: u32,
-}
-
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Set {
     pub name: String,
@@ -22,14 +15,12 @@ pub struct Set {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppData {
-    pub version: Version,
     pub supported_formats: Vec<String>,
 }
 
 impl Default for AppData {
     fn default() -> Self {
         Self {
-            version: Version::default(),
             supported_formats: vec![
                 String::from("png"),
                 String::from("jpeg"),
@@ -42,18 +33,7 @@ impl Default for AppData {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
-    pub version: Version,
     pub sets: BTreeMap<String, Set>,
-}
-
-impl Version {
-    pub fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self {
-            major,
-            minor,
-            patch,
-        }
-    }
 }
 
 impl Set {
@@ -75,8 +55,8 @@ impl Set {
 }
 
 impl Config {
-    pub fn new(version: Version, sets: BTreeMap<String, Set>) -> Self {
-        Self { version, sets }
+    pub fn new(sets: BTreeMap<String, Set>) -> Self {
+        Self { sets }
     }
 
     fn get_path(path: Vec<&str>) -> Option<PathBuf> {
